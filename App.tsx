@@ -1,9 +1,17 @@
 import {scaleLinear} from 'd3-scale';
 import * as shape from 'd3-shape';
-import React, {useContext, useEffect, useMemo, useRef, useState} from 'react';
+import React, {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {Button, Platform, StyleSheet, View} from 'react-native';
 import {LongPressGestureHandler} from 'react-native-gesture-handler';
 import Animated, {
+  cancelAnimation,
   runOnUI,
   useAnimatedGestureHandler,
   useAnimatedProps,
@@ -16,9 +24,9 @@ import Animated, {
 } from 'react-native-reanimated';
 import {useVector} from 'react-native-redash';
 import Svg, {Defs, LinearGradient, Path, Stop} from 'react-native-svg';
-import {d3Interpolate} from './d3Interpolate';
+import {data1, data2, data3} from './datas';
+import {requireOnUI} from './requireOnUI';
 import {SIZE} from './src/Model';
-import {svgPathProperties} from './svgPathProperties';
 
 interface ChartProps {
   // gestureRef: React.Ref<LongPressGestureHandler>;
@@ -155,7 +163,7 @@ function Chart({children, data, stroke}: ChartProps) {
   const pathPropertiesUI = useUIValue();
 
   //////////////////////
-  function createPath({data, width, height}) {
+  const createPath = useCallback(({data, width, height}) => {
     const x = data.map(item => item.x);
     const y = data.map(item => item.y);
 
@@ -177,7 +185,7 @@ function Chart({children, data, stroke}: ChartProps) {
       .curve(shape.curveBasis)(data);
 
     return path;
-  }
+  }, []);
 
   const initialPath = useMemo(() => createPath({data, width, height}), []);
 
@@ -189,20 +197,34 @@ function Chart({children, data, stroke}: ChartProps) {
     setPaths(([_, curr]) => [curr, createPath({data, width, height})]);
   }, [data]);
 
+  const timeout = useSharedValue(0);
+
   useEffect(() => {
     runOnUI(() => {
       'worklet';
 
+      if (transition.value !== 0 && transition.value !== 1) {
+        cancelAnimation(translation);
+        cancelAnimation(timeout);
+      }
+
       transition.value = 0;
 
-      interpolatorUI().value = d3Interpolate().interpolatePath(
-        paths[0],
-        paths[1],
+      interpolatorUI().value = requireOnUI(
+        'd3-interpolate-path',
+      ).interpolatePath(paths[0], paths[1]);
+
+      pathPropertiesUI().value = requireOnUI('svg-path-properties')(paths[1]);
+
+      timeout.value = withTiming(
+        timeout.value === 1 ? 0 : 1,
+        {
+          duration: 100,
+        },
+        () => {
+          transition.value = withTiming(1);
+        },
       );
-
-      pathPropertiesUI().value = svgPathProperties()(paths[1]);
-
-      transition.value = withTiming(1);
     })();
   }, [paths]);
 
@@ -212,7 +234,6 @@ function Chart({children, data, stroke}: ChartProps) {
   useAnimatedReaction(
     () => translation.x.value,
     value => {
-      console.log(value);
       if (!pathPropertiesUI().value) {
         return 0;
       }
@@ -254,7 +275,7 @@ function Chart({children, data, stroke}: ChartProps) {
     <ChartContext.Provider value={contextValue}>
       <Animated.View style={{position: 'absolute', width, height}}>
         <Svg
-          viewBox={`-2 -1 ${width} ${height}`}
+          viewBox={`0 0 ${width} ${height}`}
           width={width - 1}
           height={height}>
           <AnimatedPath
@@ -336,10 +357,10 @@ function Rainbow() {
         },
       ]}>
       <ChartsStack width={SIZE - 50} height={SIZE / 3}>
-        <Chart data={data ? data2 : data1} stroke={'red'}>
+        <Chart data={data ? data1 : data3} stroke={'black'}>
           <Cursor name="1" />
         </Chart>
-        <Chart data={data ? data1 : data3} stroke={'black'}>
+        <Chart data={data ? data2 : data1} stroke={'red'}>
           <Cursor name="1" />
         </Chart>
         {/* <Chart data={graph2} stroke={'black'}>
@@ -356,4 +377,3 @@ function Rainbow() {
 }
 
 export default Rainbow;
-
