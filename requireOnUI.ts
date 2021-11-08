@@ -1,5 +1,4 @@
 import {d3Interpolate} from './d3Interpolate';
-import {svgPathProperties} from './svgPathProperties';
 
 function requireOrAdd(name, module) {
   'worklet';
@@ -15,13 +14,11 @@ function requireOrAdd(name, module) {
   return global.__reanimatedUIModulesMap[name];
 }
 
-export function requireOnUI(name) {
+export function requireOnWorklet(name) {
   'worklet';
 
   // can be codegened
   switch (name) {
-    case 'svg-path-properties':
-      return requireOrAdd(name, svgPathProperties);
     case 'd3-interpolate-path':
       return requireOrAdd(name, d3Interpolate);
     default:

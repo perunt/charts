@@ -19,13 +19,14 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   useWorkletCallback,
+  withDelay,
   withSpring,
   withTiming,
 } from 'react-native-reanimated';
 import {useVector} from 'react-native-redash';
 import Svg, {Defs, LinearGradient, Path, Stop} from 'react-native-svg';
-import {data1, data2, data3} from './datas';
-import {requireOnUI} from './requireOnUI';
+import {askPoints, bidPoints} from './data';
+import {requireOnWorklet} from './requireOnUI';
 import {SIZE} from './src/Model';
 
 interface ChartProps {
@@ -63,13 +64,11 @@ function ChartsStack({children, width, height}) {
   const onGestureEvent = useAnimatedGestureHandler({
     onStart: () => {
       isActive.value = true;
-      console.log('start');
     },
     onActive: event => {
       isActive.value = true;
       translation.x.value = event.x < 0 ? 0 : event.x > width ? width : event.x;
       translation.y.value = event.y;
-      console.log('active', event.x, event.y);
     },
     onFail: () => {
       isActive.value = false;
@@ -125,8 +124,6 @@ interface DataPoints {
 }
 type PriceList = {x: number; y: number}[];
 
-const POINTS = 60;
-
 function useUIValue() {
   const idRef = useRef();
 
@@ -155,15 +152,55 @@ function useUIValue() {
   });
 }
 
+function ascending(a, b) {
+  'worklet';
+
+  return a == null || b == null
+    ? NaN
+    : a < b
+    ? -1
+    : a > b
+    ? 1
+    : a >= b
+    ? 0
+    : NaN;
+}
+
+function least(length, compare = ascending) {
+  'worklet';
+
+  let min;
+  let defined = false;
+  if (compare.length === 1) {
+    let minValue;
+    for (let i = 0; i < length; i++) {
+      const value = compare(i);
+      if (
+        defined ? ascending(value, minValue) < 0 : ascending(value, value) === 0
+      ) {
+        min = i;
+        minValue = value;
+        defined = true;
+      }
+    }
+  } else {
+    for (let i = 0; i < length; i++) {
+      if (defined ? compare(i, min) < 0 : compare(i, i) === 0) {
+        min = i;
+        defined = true;
+      }
+    }
+  }
+  return min;
+}
+
 function Chart({children, data, stroke}: ChartProps) {
   const {isActive, translation, width, height} = useContext(ChartsStackContext);
   // const gestureRef = useRef<LongPressGestureHandler>();
 
   const interpolatorUI = useUIValue();
-  const pathPropertiesUI = useUIValue();
 
-  //////////////////////
-  const createPath = useCallback(({data, width, height}) => {
+  const getScales = useCallback(({data, width, height}) => {
     const x = data.map(item => item.x);
     const y = data.map(item => item.y);
 
@@ -175,29 +212,54 @@ function Chart({children, data, stroke}: ChartProps) {
       .domain([Math.min(...y), Math.max(...y)])
       .range([height, 0]);
 
+    return {
+      scaleY,
+      scaleX,
+    };
+  }, []);
+
+  //////////////////////
+  const createPath = useCallback(({data, width, height}) => {
+    const {scaleX, scaleY} = getScales({data, width, height});
+
     const path = shape
       .line()
       .x(item => scaleX(item.x))
-      .y(item => scaleY(item.y)) // Y position of top line breaks
-      // .x(item => scaleX(item.x))
-      // .y1(item => scaleY(item.y)) // Y position of top line breaks
-      // .y0(height)
+      .y(item => scaleY(item.y))
       .curve(shape.curveBasis)(data);
 
     return path;
   }, []);
+
+  const createPoints = useCallback(
+    ({data, width, height}) => {
+      const {scaleX, scaleY} = getScales({data, width, height});
+
+      const points = [];
+
+      for (let i = 0; i < data.length; i++) {
+        points.push({
+          x: scaleX(data[i].x),
+          y: scaleY(data[i].y),
+        });
+      }
+
+      return points;
+    },
+    [getScales],
+  );
 
   const initialPath = useMemo(() => createPath({data, width, height}), []);
 
   const [paths, setPaths] = useState(() => [initialPath, initialPath]);
 
   const transition = useSharedValue(0);
+  const points = useSharedValue([]);
 
   useEffect(() => {
     setPaths(([_, curr]) => [curr, createPath({data, width, height})]);
+    points.value = createPoints({data, width, height});
   }, [data]);
-
-  const timeout = useSharedValue(0);
 
   useEffect(() => {
     runOnUI(() => {
@@ -205,48 +267,36 @@ function Chart({children, data, stroke}: ChartProps) {
 
       if (transition.value !== 0 && transition.value !== 1) {
         cancelAnimation(translation);
-        cancelAnimation(timeout);
       }
 
       transition.value = 0;
 
-      interpolatorUI().value = requireOnUI(
+      interpolatorUI().value = requireOnWorklet(
         'd3-interpolate-path',
       ).interpolatePath(paths[0], paths[1]);
 
-      pathPropertiesUI().value = requireOnUI('svg-path-properties')(paths[1]);
-
-      timeout.value = withTiming(
-        timeout.value === 1 ? 0 : 1,
-        {
-          duration: 100,
-        },
-        () => {
-          transition.value = withTiming(1);
-        },
-      );
+      transition.value = withDelay(100, withTiming(1));
     })();
   }, [paths]);
 
   const x = useSharedValue(0);
   const y = useSharedValue(0);
+  const activeIndex = useSharedValue(0);
 
   useAnimatedReaction(
-    () => translation.x.value,
+    () => ({x: translation.x.value, y: translation.y.value}),
     value => {
-      if (!pathPropertiesUI().value) {
-        return 0;
-      }
+      const scaled = points.value;
 
-      const totalLength = pathPropertiesUI().value.getTotalLength();
-      const values = pathPropertiesUI().value.getPointAtLength(
-        totalLength * (value / width),
+      const index = least(scaled.length, i =>
+        Math.hypot(scaled[i].x - Math.floor(value.x)),
       );
 
-      x.value = values.x;
-      y.value = values.y;
+      activeIndex.value = index;
+      x.value = scaled[index].x;
+      y.value = scaled[index].y;
     },
-    [paths],
+    [paths, data],
   );
 
   const animatedProps = useAnimatedProps(() => {
@@ -254,8 +304,16 @@ function Chart({children, data, stroke}: ChartProps) {
       ? interpolatorUI().value(transition.value)
       : '';
 
+    const pathValue = d.replace('M', 'L');
+
+    const gradientD =
+      pathValue.length > 0
+        ? `M0,${0} C 0,0 0,0 0,0 ${pathValue} L ${width + 1},${height + 1}`
+        : '';
+
     return {
-      d: d,
+      d: gradientD,
+      // d,
     };
   }, [paths]);
 
@@ -274,10 +332,7 @@ function Chart({children, data, stroke}: ChartProps) {
   return (
     <ChartContext.Provider value={contextValue}>
       <Animated.View style={{position: 'absolute', width, height}}>
-        <Svg
-          viewBox={`0 0 ${width} ${height}`}
-          width={width - 1}
-          height={height}>
+        <Svg viewBox={`0 0 ${width} ${height}`} width={width} height={height}>
           <AnimatedPath
             animatedProps={animatedProps}
             fill="url(#prefix__paint0_linear)"
@@ -356,11 +411,11 @@ function Rainbow() {
           alignItems: 'center',
         },
       ]}>
-      <ChartsStack width={SIZE - 50} height={SIZE / 3}>
-        <Chart data={data ? data1 : data3} stroke={'black'}>
+      <ChartsStack width={SIZE} height={SIZE / 3}>
+        <Chart data={data ? askPoints : bidPoints} stroke={'black'}>
           <Cursor name="1" />
         </Chart>
-        <Chart data={data ? data2 : data1} stroke={'red'}>
+        <Chart data={data ? bidPoints : askPoints} stroke={'red'}>
           <Cursor name="1" />
         </Chart>
         {/* <Chart data={graph2} stroke={'black'}>
